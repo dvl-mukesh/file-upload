@@ -6,13 +6,12 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"time"
 )
 
 const (
 	MAX_UPLOAD_SIZE          = 1024 * 1024 // 1MB
 	MAX_MULTIPLE_UPLOAD_SIZE = 32 << 20
+	UPLOAD_DIR               = "./uploads"
 )
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +47,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a new file in the uploads directory
-	dst, err := os.Create(fmt.Sprintf("./uploads/%d%s", time.Now().UnixNano(), filepath.Ext(fileHeader.Filename)))
+	dst, err := os.Create(fmt.Sprintf("./uploads/%s", fileHeader.Filename))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -87,65 +86,87 @@ func uploadMultipleFiles(w http.ResponseWriter, r *http.Request) {
 	files := r.MultipartForm.File["file"]
 
 	for _, fileHeader := range files {
+		// Restrict the size of each uploaded file to 1MB.
+		// To prevent the aggregate size from exceeding
+		// a specified value, use the http.MaxBytesReader() method
+		// before calling ParseMultipartForm()
 		if fileHeader.Size > MAX_UPLOAD_SIZE {
-			http.Error(w, fmt.Sprintf("uploaded file %q is too big.", fileHeader.Filename), http.StatusBadRequest)
-
-			file, err := fileHeader.Open()
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			defer file.Close()
-
-			buff := make([]byte, 512)
-			_, err = file.Read(buff)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			filetype := http.DetectContentType(buff)
-			if filetype != "image/jpeg" && filetype != "image/png" {
-				http.Error(w, "The provided file format is not allowed. Please upload a JPEG or PNG image", http.StatusBadRequest)
-				return
-			}
-
-			_, err = file.Seek(0, io.SeekStart)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			err = os.MkdirAll("./uploads", os.ModePerm)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			f, err := os.Create(fmt.Sprintf("./uploads/%d%s", time.Now().UnixNano(), filepath.Ext(fileHeader.Filename)))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			defer f.Close()
-
-			_, err = io.Copy(f, file)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
+			http.Error(w, fmt.Sprintf("The uploaded file is too big: %s. Please use an image less than 1MB in size", fileHeader.Filename), http.StatusBadRequest)
+			return
 		}
 
-		fmt.Fprintf(w, "Upload successful")
+		// Open the file
+		file, err := fileHeader.Open()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		defer file.Close()
+
+		buff := make([]byte, 512)
+		_, err = file.Read(buff)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_, err = file.Seek(0, io.SeekStart)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		err = os.MkdirAll("./uploads", os.ModePerm)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		f, err := os.Create(fmt.Sprintf("./uploads/%s", fileHeader.Filename))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		defer f.Close()
+
+		_, err = io.Copy(f, file)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
+
+	fmt.Fprintf(w, "Upload successful")
+}
+
+func downloadFile(w http.ResponseWriter, r *http.Request) {
+
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// path := strings.Split(r.URL.Path, "/")
+	// if len(path) < 3 {
+	// 	http.Error(w, "filename should be provided", http.StatusBadRequest)
+	// 	return
+	// }
+	// filename := path[len(path)-1]
+
+	filename := r.URL.Query().Get("filename")
+
+	downloadFilePath := UPLOAD_DIR + "/" + filename
+	http.ServeFile(w, r, downloadFilePath)
+
 }
 
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/upload", uploadHandler)
 	mux.HandleFunc("/upload-multiple-files", uploadMultipleFiles)
+	mux.HandleFunc("/download-file/", downloadFile)
 
 	if err := http.ListenAndServe(":4500", mux); err != nil {
 		log.Fatal(err)
